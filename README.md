@@ -1,12 +1,13 @@
 Windows app
 
-Pick a folder to display.
+- Pick a folder to display.
+- Added settings
+- Clear Canvas
+- Reset Canvas
 
 to do
 - save and load canvases
 - add notes
-- loading bar
-- image limiter per canvas + load next canvas
-- multithreaded, sequencial image loading
 
-![wqDx8BfKYS_20241208_03 27](https://github.com/user-attachments/assets/ae88c098-1aae-471b-8fce-0efcfa6c5d95)
+![mTD9f2RamN_20241208_23 38](https://github.com/user-attachments/assets/79a1430d-ba97-4634-8b30-d0f97f892001)
+
