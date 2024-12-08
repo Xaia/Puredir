@@ -8,7 +8,8 @@ from math import ceil
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QFileDialog,
     QGraphicsPixmapItem, QTreeWidget, QTreeWidgetItem, QMessageBox,
-    QStyleFactory, QSplitter, QMenu, QTabWidget, QProgressBar, QVBoxLayout, QWidget, QGraphicsRectItem, QGraphicsTextItem
+    QStyleFactory, QSplitter, QMenu, QTabWidget, QProgressBar, QVBoxLayout, QWidget,
+    QGraphicsRectItem, QGraphicsTextItem, QDialog, QHBoxLayout, QLabel, QSpinBox, QPushButton
 )
 from PyQt5.QtCore import (
     Qt, QPointF, QPoint, QRectF, QEvent, QRect, QRunnable, QThreadPool,
@@ -22,23 +23,24 @@ from ui.graphics_view import GraphicsView  # Ensure this import points to your f
 from ui.draggable_pixmap_item import DraggablePixmapItem
 from ui.folder_backdrop_item import FolderBackdropItem  # Import the custom item
 from utils.image_cache import LRUCache  # Import the LRUCache
-
 # Constants
 SUPPORTED_IMAGE_FORMATS = ['.png', '.xpm', '.jpg', '.jpeg', '.bmp', '.gif']
 FAVORITES_FILE = "favorites.json"
+CONFIG_FILE = "config.json"
 
+# Layout Parameters
 UNIFORM_HEIGHT = 150
 COLUMNS = 5
 SPACING_X = 10
 SPACING_Y = 10
-EDGE_RESIZE_MARGIN = 20
 INFINITE_CANVAS_SIZE = 10_000_000
-RIGHT_CLICK_DRAG_THRESHOLD = 5
+
 
 class ImageLoadSignals(QObject):
     finished = pyqtSignal(str, str, QPixmap, float)  # folder_path, filepath, pix, scale_factor
     error = pyqtSignal(str, Exception)
     progress = pyqtSignal(int)
+
 
 class ImageLoadWorker(QRunnable):
     def __init__(self, folder_path, filepaths, uniform_height, image_cache):
@@ -61,7 +63,7 @@ class ImageLoadWorker(QRunnable):
                         raise ValueError(f"Could not load image: {filepath}")
                     # Store in cache
                     self.image_cache.put(filepath, pix)
-                
+
                 scale_factor = self.uniform_height / pix.height()
 
                 # Emit finished for each image
@@ -73,6 +75,90 @@ class ImageLoadWorker(QRunnable):
             except Exception as e:
                 self.signals.error.emit(filepath, e)
 
+
+class SettingsDialog(QDialog):
+    """
+    Dialog for adjusting layout settings such as columns and spacing.
+    """
+    def __init__(self, current_columns, current_spacing_x, current_spacing_y, current_uniform_height, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        
+        # Number of Columns
+        columns_layout = QHBoxLayout()
+        columns_label = QLabel("Number of Columns:")
+        self.columns_spinbox = QSpinBox()
+        self.columns_spinbox.setMinimum(1)
+        self.columns_spinbox.setMaximum(20)
+        self.columns_spinbox.setValue(current_columns)
+        columns_layout.addWidget(columns_label)
+        columns_layout.addWidget(self.columns_spinbox)
+        layout.addLayout(columns_layout)
+        
+        # Spacing X
+        spacing_x_layout = QHBoxLayout()
+        spacing_x_label = QLabel("Spacing X:")
+        self.spacing_x_spinbox = QSpinBox()
+        self.spacing_x_spinbox.setMinimum(0)
+        self.spacing_x_spinbox.setMaximum(100)
+        self.spacing_x_spinbox.setValue(current_spacing_x)
+        spacing_x_layout.addWidget(spacing_x_label)
+        spacing_x_layout.addWidget(self.spacing_x_spinbox)
+        layout.addLayout(spacing_x_layout)
+        
+        # Spacing Y
+        spacing_y_layout = QHBoxLayout()
+        spacing_y_label = QLabel("Spacing Y:")
+        self.spacing_y_spinbox = QSpinBox()
+        self.spacing_y_spinbox.setMinimum(0)
+        self.spacing_y_spinbox.setMaximum(100)
+        self.spacing_y_spinbox.setValue(current_spacing_y)
+        spacing_y_layout.addWidget(spacing_y_label)
+        spacing_y_layout.addWidget(self.spacing_y_spinbox)
+        layout.addLayout(spacing_y_layout)
+        
+        # Uniform Height
+        uniform_height_layout = QHBoxLayout()
+        uniform_height_label = QLabel("Uniform Height:")
+        self.uniform_height_spinbox = QSpinBox()
+        self.uniform_height_spinbox.setMinimum(50)
+        self.uniform_height_spinbox.setMaximum(1000)
+        self.uniform_height_spinbox.setValue(current_uniform_height)
+        uniform_height_layout.addWidget(uniform_height_label)
+        uniform_height_layout.addWidget(self.uniform_height_spinbox)
+        layout.addLayout(uniform_height_layout)
+        
+        # Buttons
+        buttons_layout = QHBoxLayout()
+        ok_button = QPushButton("OK")
+        cancel_button = QPushButton("Cancel")
+        ok_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        buttons_layout.addStretch()
+        buttons_layout.addWidget(ok_button)
+        buttons_layout.addWidget(cancel_button)
+        layout.addLayout(buttons_layout)
+        
+        self.setLayout(layout)
+    
+    def get_settings(self):
+        """
+        Retrieves the settings from the dialog.
+        
+        Returns:
+            tuple: (columns, spacing_x, spacing_y, uniform_height)
+        """
+        return (
+            self.columns_spinbox.value(),
+            self.spacing_x_spinbox.value(),
+            self.spacing_y_spinbox.value(),
+            self.uniform_height_spinbox.value()
+        )
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -80,6 +166,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PureRef Prototype")
         self.resize(1600, 900)
         self.apply_dark_theme()
+
+        # Initialize layout parameters as instance variables with default values
+        self.UNIFORM_HEIGHT = UNIFORM_HEIGHT
+        self.COLUMNS = COLUMNS
+        self.SPACING_X = SPACING_X
+        self.SPACING_Y = SPACING_Y
+
+        # Load settings from configuration file
+        self.load_settings()
 
         self.thread_pool = QThreadPool()
         self.thread_pool.setMaxThreadCount(max(QThreadPool.globalInstance().maxThreadCount(), 4))
@@ -93,7 +188,14 @@ class MainWindow(QMainWindow):
         self.scene = QGraphicsScene()
         self.scene.setSceneRect(-INFINITE_CANVAS_SIZE//2, -INFINITE_CANVAS_SIZE//2, INFINITE_CANVAS_SIZE, INFINITE_CANVAS_SIZE)
 
+        # Initialize GraphicsView and connect custom signals
         self.view = GraphicsView(self.scene, self)
+        self.view.setContextMenuPolicy(Qt.NoContextMenu)  # Prevent the view from overriding the main window's context menu
+
+        # Connect signals from GraphicsView
+        self.view.clear_canvas_signal.connect(self.clear_canvas)
+        self.view.open_settings_signal.connect(self.open_settings_dialog)
+        self.view.reset_view_signal.connect(self.reset_view)  # Connect the new reset_view_signal
 
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
@@ -103,7 +205,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.progress_bar)
 
         self.favorites = self.load_favorites_from_json()
-        # Updated data structure: folder_path -> {'images': [...], 'rect_item': ..., 'text_item': ...}
+        # Updated data structure: folder_path -> {'images': [...], 'backdrop': ...}
         self.loaded_images = {}
         self.current_folder_offset_x = 0  # where the next folder should start horizontally
 
@@ -144,6 +246,10 @@ class MainWindow(QMainWindow):
         splitter.setSizes([300, 1300])
 
         self.setCentralWidget(splitter)
+
+        # Set context menu policy for the main window to accept context menu events
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.contextMenuEventHandler)
 
     def apply_dark_theme(self):
         dark_palette = QPalette()
@@ -319,7 +425,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.show()
         self.progress_bar.setValue(0)
 
-        worker = ImageLoadWorker(folder_path, file_paths, UNIFORM_HEIGHT, self.image_cache)
+        worker = ImageLoadWorker(folder_path, file_paths, self.UNIFORM_HEIGHT, self.image_cache)
         worker.signals.finished.connect(self.on_image_loaded)
         worker.signals.error.connect(self.on_image_load_error)
         worker.signals.progress.connect(self.update_progress)
@@ -339,9 +445,9 @@ class MainWindow(QMainWindow):
         image_height = pix.height() * scale_factor
 
         # Check if we need a new row
-        if images_in_row == COLUMNS:
+        if images_in_row == self.COLUMNS:
             # Finish previous row
-            folder_total_height += row_max_height + SPACING_Y
+            folder_total_height += row_max_height + self.SPACING_Y
             # Move down to next row
             current_y = folder_total_height
             current_x = self.current_folder_offset_x
@@ -358,23 +464,22 @@ class MainWindow(QMainWindow):
         if folder_path not in self.loaded_images:
             self.loaded_images[folder_path] = {
                 "images": [],
-                "rect_item": None,
-                "text_item": None
+                "backdrop": None
             }
         self.loaded_images[folder_path]["images"].append(item)
 
         # Calculate and store relative position
-        relative_x = current_x - (self.current_folder_offset_x - SPACING_X)
-        relative_y = current_y + SPACING_Y  # Assuming backdrop is above by SPACING_Y
+        relative_x = current_x - (self.current_folder_offset_x - self.SPACING_X)
+        relative_y = current_y + self.SPACING_Y  # Assuming backdrop is above by SPACING_Y
         data["image_relative_positions"].append((relative_x, relative_y))
 
         # Update row and folder metrics
-        current_x += image_width + SPACING_X
+        current_x += image_width + self.SPACING_X
         if image_height > row_max_height:
             row_max_height = image_height
 
         # Update max width
-        width_used_this_row = current_x - self.current_folder_offset_x - SPACING_X
+        width_used_this_row = current_x - self.current_folder_offset_x - self.SPACING_X
         if width_used_this_row > folder_max_width:
             folder_max_width = width_used_this_row
 
@@ -413,11 +518,10 @@ class MainWindow(QMainWindow):
             folder_total_height += row_max_height
 
         # Define the backdrop rectangle
-        folder_start_x = self.current_folder_offset_x
-        rect_left = folder_start_x - SPACING_X
-        rect_top = -SPACING_Y
-        rect_width = folder_max_width + 2 * SPACING_X
-        rect_height = folder_total_height + 2 * SPACING_Y
+        rect_left = self.current_folder_offset_x - self.SPACING_X
+        rect_top = -self.SPACING_Y
+        rect_width = folder_max_width + 2 * self.SPACING_X
+        rect_height = folder_total_height + 2 * self.SPACING_Y
 
         backdrop_rect = QRectF(rect_left, rect_top, rect_width, rect_height)
 
@@ -430,10 +534,10 @@ class MainWindow(QMainWindow):
         self.loaded_images[folder_path]["backdrop"] = backdrop_item
 
         # Update offset for next folder
-        self.current_folder_offset_x += folder_max_width + 2 * SPACING_X
+        self.current_folder_offset_x += folder_max_width + 2 * self.SPACING_X
 
     def on_image_load_error(self, filepath, error):
-        print(f"Error loading {filepath}: {error}")
+        QMessageBox.warning(self, "Image Load Error", f"Failed to load {filepath}.\nError: {error}")
 
     def update_progress(self, value):
         self.progress_bar.setValue(value)
@@ -490,10 +594,10 @@ class MainWindow(QMainWindow):
             folder_total_height = data["folder_total_height"]
 
             # Define the new backdrop rectangle
-            rect_left = self.current_folder_offset_x - SPACING_X
-            rect_top = -SPACING_Y
-            rect_width = folder_max_width + 2 * SPACING_X
-            rect_height = folder_total_height + 2 * SPACING_Y
+            rect_left = self.current_folder_offset_x - self.SPACING_X
+            rect_top = -self.SPACING_Y
+            rect_width = folder_max_width + 2 * self.SPACING_X
+            rect_height = folder_total_height + 2 * self.SPACING_Y
 
             backdrop_rect = QRectF(rect_left, rect_top, rect_width, rect_height)
 
@@ -526,20 +630,136 @@ class MainWindow(QMainWindow):
                 image_item.setPos(QPointF(new_x, new_y))
 
             # Update offset for the next folder
-            self.current_folder_offset_x += folder_max_width + 2 * SPACING_X
+            self.current_folder_offset_x += folder_max_width + 2 * self.SPACING_X
 
     def any_images_loaded(self):
         return bool(self.loaded_images)
 
     def reset_canvas(self):
+        """
+        Resets the canvas by clearing all items and resetting transformations.
+        """
         # Reset all folder offset
         self.current_folder_offset_x = 0
         self.view.resetTransform()
         self.view.centerOn(0,0)
         self.view.scale_factor_total = 1.0
-        # Optionally, clear the scene and reload any default state
+        self.scene.clear()
+        self.loaded_images.clear()
+        self.folder_placement_data.clear()
+        self.loaded_folders_order.clear()
+        self.progress_bar.hide()
+
+    def reset_view(self):
+        """
+        Resets the view to its initial state without clearing the canvas.
+        """
+        self.view.resetTransform()
+        self.view.centerOn(0, 0)
+        self.view.scale_factor_total = 1.0
+
+    def contextMenuEventHandler(self, position):
+        """
+        Handles the custom context menu event for the main window.
+        Prevents showing the main context menu if right-click is on the GraphicsView.
+
+        Args:
+            position (QPoint): The position where the menu was requested.
+        """
+        # Determine the widget at the clicked position
+        clicked_widget = self.childAt(self.mapToGlobal(position))
+        if isinstance(clicked_widget, GraphicsView):
+            # Do not show the main window's context menu if right-click is on the GraphicsView
+            return
+
+
+    def clear_canvas(self):
+        """
+        Clears the canvas by unchecking all folders in both the Directories and Favorites trees.
+        """
+        self.uncheck_all_items(self.directory_tree)
+        self.uncheck_all_items(self.favorites_tree)
+
+    def uncheck_all_items(self, tree):
+        """
+        Recursively unchecks all checked items in the given QTreeWidget.
+
+        Args:
+            tree (QTreeWidget): The tree to traverse and uncheck items.
+        """
+        root = tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            self.uncheck_item_recursive(item)
+
+    def uncheck_item_recursive(self, item):
+        """
+        Recursively unchecks the given item and all its children.
+
+        Args:
+            item (QTreeWidgetItem): The item to uncheck.
+        """
+        if item.checkState(0) == Qt.Checked:
+            item.setCheckState(0, Qt.Unchecked)
+        for i in range(item.childCount()):
+            child = item.child(i)
+            self.uncheck_item_recursive(child)
+
+    def open_settings_dialog(self):
+        """
+        Opens the settings dialog to allow users to configure layout parameters.
+        """
+        dialog = SettingsDialog(
+            current_columns=self.COLUMNS,
+            current_spacing_x=self.SPACING_X,
+            current_spacing_y=self.SPACING_Y,
+            current_uniform_height=self.UNIFORM_HEIGHT,
+            parent=self
+        )
+        if dialog.exec_() == QDialog.Accepted:
+            new_columns, new_spacing_x, new_spacing_y, new_uniform_height = dialog.get_settings()
+            self.update_settings(new_columns, new_spacing_x, new_spacing_y, new_uniform_height)
+
+    def update_settings(self, new_columns, new_spacing_x, new_spacing_y, new_uniform_height):
+        """
+        Updates layout settings and rearranges the canvas.
+        
+        Args:
+            new_columns (int): New number of columns.
+            new_spacing_x (int): New horizontal spacing.
+            new_spacing_y (int): New vertical spacing.
+            new_uniform_height (int): New uniform height for images.
+        """
+        self.COLUMNS = new_columns
+        self.SPACING_X = new_spacing_x
+        self.SPACING_Y = new_spacing_y
+        self.UNIFORM_HEIGHT = new_uniform_height
+
+        # Update existing placement data
+        for folder_path in self.loaded_folders_order:
+            data = self.folder_placement_data.get(folder_path, {})
+            data["current_x"] = self.current_folder_offset_x
+            data["current_y"] = 0
+            data["images_in_row"] = 0
+            data["row_max_height"] = 0
+            data["folder_max_width"] = 0
+            data["folder_total_height"] = 0
+            data["image_relative_positions"] = []
+
+        # Reset folder offset and rearrange
+        self.current_folder_offset_x = 0
+        self.rearrange_folders()
+
+        # Save the new settings
+        self.save_settings()
 
     def on_directories_context_menu(self, pos):
+        """
+        Displays a context menu for the directories tree.
+
+        Args:
+            pos (QPoint): The position where the menu was requested.
+        """
         item = self.directory_tree.itemAt(pos)
         if item:
             folder_path = item.data(0, Qt.UserRole)
@@ -551,6 +771,12 @@ class MainWindow(QMainWindow):
                 self.save_favorites_to_json()
 
     def on_favorites_context_menu(self, pos):
+        """
+        Displays a context menu for the favorites tree.
+
+        Args:
+            pos (QPoint): The position where the menu was requested.
+        """
         item = self.favorites_tree.itemAt(pos)
         if item:
             folder_path = item.data(0, Qt.UserRole)
@@ -588,16 +814,64 @@ class MainWindow(QMainWindow):
 
     def load_favorites_from_json(self):
         if os.path.exists(FAVORITES_FILE):
-            with open(FAVORITES_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
+            try:
+                with open(FAVORITES_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return data
+            except json.JSONDecodeError:
+                QMessageBox.warning(self, "JSON Error", f"Failed to parse {FAVORITES_FILE}.")
         return []
 
     def save_favorites_to_json(self):
-        with open(FAVORITES_FILE, 'w', encoding='utf-8') as f:
-            json.dump(self.favorites, f, ensure_ascii=False, indent=4)
+        try:
+            with open(FAVORITES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.favorites, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            QMessageBox.warning(self, "Save Error", f"Failed to save favorites.\nError: {e}")
 
+    def load_settings(self):
+        """
+        Loads layout settings from the configuration file.
+        """
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        self.COLUMNS = data.get("COLUMNS", self.COLUMNS)
+                        self.SPACING_X = data.get("SPACING_X", self.SPACING_X)
+                        self.SPACING_Y = data.get("SPACING_Y", self.SPACING_Y)
+                        self.UNIFORM_HEIGHT = data.get("UNIFORM_HEIGHT", self.UNIFORM_HEIGHT)
+            except json.JSONDecodeError:
+                QMessageBox.warning(self, "Configuration Error", f"Failed to parse {CONFIG_FILE}. Using default settings.")
+        else:
+            # Configuration file does not exist; use default settings
+            pass
+
+    def save_settings(self):
+        """
+        Saves the current layout settings to the configuration file.
+        """
+        data = {
+            "COLUMNS": self.COLUMNS,
+            "SPACING_X": self.SPACING_X,
+            "SPACING_Y": self.SPACING_Y,
+            "UNIFORM_HEIGHT": self.UNIFORM_HEIGHT
+        }
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            QMessageBox.warning(self, "Save Error", f"Failed to save settings.\nError: {e}")
+
+    def reset_view(self):
+        """
+        Resets the view to its initial state without clearing the canvas.
+        """
+        self.view.resetTransform()
+        self.view.centerOn(0, 0)
+        self.view.scale_factor_total = 1.0
 
 def main():
     app = QApplication(sys.argv)

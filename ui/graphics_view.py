@@ -1,8 +1,8 @@
 # ui/graphics_view.py
 
 from PyQt5.QtWidgets import QGraphicsView, QMenu, QMessageBox, QApplication
-from PyQt5.QtCore import Qt, QRect, QPoint, QRectF, QTimer
-from PyQt5.QtGui import QWheelEvent, QMouseEvent, QCursor,  QPainter
+from PyQt5.QtCore import Qt, QRect, QPoint, QRectF, QTimer, pyqtSignal
+from PyQt5.QtGui import QWheelEvent, QMouseEvent, QCursor, QPainter
 from utils.constants import (
     EDGE_RESIZE_MARGIN, RIGHT_CLICK_DRAG_THRESHOLD, INFINITE_CANVAS_SIZE
 )
@@ -10,18 +10,12 @@ from ui.draggable_pixmap_item import DraggablePixmapItem
 
 
 class GraphicsView(QGraphicsView):
-    """
-    Custom QGraphicsView subclass to handle panning, zooming, window resizing, and right-click dragging.
-    """
+    # Define custom signals for Clear Canvas, Settings, and Reset View
+    clear_canvas_signal = pyqtSignal()
+    open_settings_signal = pyqtSignal()
+    reset_view_signal = pyqtSignal()
 
     def __init__(self, scene, mainwindow):
-        """
-        Initializes the GraphicsView with necessary attributes and settings.
-
-        Args:
-            scene (QGraphicsScene): The scene to be displayed.
-            mainwindow (QMainWindow): Reference to the main window for window operations.
-        """
         super().__init__(scene)
         self.mainwindow = mainwindow
         self.zoom_factor = 1.15
@@ -196,20 +190,32 @@ class GraphicsView(QGraphicsView):
 
     def show_context_menu(self, global_pos):
         """
-        Displays a context menu with options to reset the canvas or exit the application.
+        Displays a context menu with options to reset the view, clear the canvas, open settings, or exit the application.
 
         Args:
             global_pos (QPoint): The global position where the menu should appear.
         """
         menu = QMenu()
+
+        # Existing actions
         reset_action = menu.addAction("Reset to Center")
+        clear_canvas_action = menu.addAction("Clear Canvas")
+        settings_action = menu.addAction("Settings")
+        menu.addSeparator()
         exit_action = menu.addAction("Exit")
 
         chosen = menu.exec_(global_pos)
         if chosen == exit_action:
             QApplication.quit()
         elif chosen == reset_action:
-            self.mainwindow.reset_canvas()
+            # Emit signal to reset view
+            self.reset_view_signal.emit()
+        elif chosen == clear_canvas_action:
+            # Emit signal to clear canvas
+            self.clear_canvas_signal.emit()
+        elif chosen == settings_action:
+            # Emit signal to open settings
+            self.open_settings_signal.emit()
 
     def get_resize_direction(self, pos):
         """
