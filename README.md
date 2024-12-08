@@ -7,6 +7,7 @@ Windows app
 - Backdrop with folder name
 - Multithreading
 - Progress bar
+- Supported file types .png', '.xpm', '.jpg', '.jpeg', '.bmp', '.gif'
 
 to do
 - save and load canvases
