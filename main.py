@@ -6,13 +6,14 @@ from math import ceil
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QFileDialog,
     QGraphicsPixmapItem, QTreeWidget, QTreeWidgetItem, QMessageBox,
-    QStyleFactory, QSplitter, QMenu, QTabWidget
+    QStyleFactory, QSplitter, QMenu, QTabWidget, QProgressBar, QVBoxLayout, QWidget, QGraphicsRectItem, QGraphicsTextItem
 )
 from PyQt5.QtCore import (
-    Qt, QPointF, QPoint, QRectF, QEvent, QRect
+    Qt, QPointF, QPoint, QRectF, QEvent, QRect, QRunnable, QThreadPool,
+    pyqtSignal, QObject, QTimer, QThread
 )
 from PyQt5.QtGui import (
-    QWheelEvent, QMouseEvent, QPixmap, QPainter, QPalette, QColor
+    QWheelEvent, QMouseEvent, QPixmap, QPainter, QPalette, QColor, QPen, QFont
 )
 
 SUPPORTED_IMAGE_FORMATS = ['.png', '.xpm', '.jpg', '.jpeg', '.bmp', '.gif']
@@ -25,6 +26,37 @@ SPACING_Y = 10
 EDGE_RESIZE_MARGIN = 20
 INFINITE_CANVAS_SIZE = 10_000_000
 RIGHT_CLICK_DRAG_THRESHOLD = 5
+
+class ImageLoadSignals(QObject):
+    finished = pyqtSignal(str, str, QPixmap, float)  # folder_path, filepath, pix, scale_factor
+    error = pyqtSignal(str, Exception)
+    progress = pyqtSignal(int)
+
+class ImageLoadWorker(QRunnable):
+    def __init__(self, folder_path, filepaths, uniform_height):
+        super().__init__()
+        self.folder_path = folder_path
+        self.filepaths = filepaths
+        self.uniform_height = uniform_height
+        self.signals = ImageLoadSignals()
+
+    def run(self):
+        for i, filepath in enumerate(self.filepaths):
+            try:
+                pix = QPixmap(filepath)
+                if pix.isNull():
+                    raise ValueError(f"Could not load image: {filepath}")
+                
+                scale_factor = self.uniform_height / pix.height()
+
+                # Emit finished for each image
+                self.signals.finished.emit(self.folder_path, filepath, pix, scale_factor)
+                
+                # Emit progress
+                progress = int((i + 1) / len(self.filepaths) * 100)
+                self.signals.progress.emit(progress)
+            except Exception as e:
+                self.signals.error.emit(filepath, e)
 
 class DraggablePixmapItem(QGraphicsPixmapItem):
     def __init__(self, pixmap):
@@ -91,14 +123,12 @@ class GraphicsView(QGraphicsView):
         self.panning = False
         self.pan_start_view = QPoint()
 
-        # Right-click logic
         self.right_click_pressed = False
         self.right_click_press_pos = QPoint()
         self.right_click_dragging = False
         self.win_drag_start_global = QPoint()
         self.win_start_pos = QPoint()
 
-        # Resizing
         self.resizing_window = False
         self.resize_direction = None
         self.window_drag_start_pos = QPoint()
@@ -169,7 +199,6 @@ class GraphicsView(QGraphicsView):
             self.handle_window_resize(event.globalPos())
             event.accept()
         else:
-            # Update cursor if conditions met
             if not self.panning and not self.resizing_window and not self.right_click_dragging:
                 edge = self.get_resize_direction(event.pos())
                 if edge:
@@ -281,15 +310,34 @@ class MainWindow(QMainWindow):
         self.resize(1600, 900)
         self.apply_dark_theme()
 
+        self.thread_pool = QThreadPool()
+        self.thread_pool.setMaxThreadCount(max(QThread.idealThreadCount(), 4))
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.hide()
+
         self.scene = QGraphicsScene()
         self.scene.setSceneRect(-INFINITE_CANVAS_SIZE//2, -INFINITE_CANVAS_SIZE//2, INFINITE_CANVAS_SIZE, INFINITE_CANVAS_SIZE)
 
-        # Create view immediately so it's available for reset_canvas()
         self.view = GraphicsView(self.scene, self)
 
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0,0,0,0)
+        right_layout.setSpacing(0)
+        right_layout.addWidget(self.view)
+        right_layout.addWidget(self.progress_bar)
+
         self.favorites = self.load_favorites_from_json()
-        self.loaded_images = {}
-        self.current_y = 0
+        self.loaded_images = {}  # folder_path -> list of items
+        self.current_folder_offset_x = 0  # where the next folder should start horizontally
+
+        self.folder_load_counts = {}
+        self.folder_loaded_counts = {}
+        # Per-folder placement data
+        # {folder_path: {"current_x", "current_y", "images_in_row", "row_max_height", "folder_max_width", "folder_total_height"}}
+        self.folder_placement_data = {}
 
         self.directory_tree = QTreeWidget()
         self.directory_tree.setHeaderLabel("Folders")
@@ -315,7 +363,7 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter()
         splitter.addWidget(self.tabs)
-        splitter.addWidget(self.view)
+        splitter.addWidget(right_container)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([300, 1300])
 
@@ -359,6 +407,16 @@ class MainWindow(QMainWindow):
             }
             QMainWindow {
                 background-color: #353535;
+            }
+            QProgressBar {
+                background-color: #2d2d2d;
+                color: white;
+                border: 1px solid #555;
+                border-radius: 3px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #3a3a3a;
             }
         """
         QApplication.instance().setStyleSheet(dark_stylesheet)
@@ -454,33 +512,135 @@ class MainWindow(QMainWindow):
         if not file_paths:
             return
 
-        folder_items = []
-        i = 0
-        while i < len(file_paths):
-            row_files = file_paths[i:i+COLUMNS]
-            max_height = UNIFORM_HEIGHT
-            current_x = 0
-            for fpath in row_files:
-                pix = QPixmap(fpath)
-                if pix.isNull():
-                    continue
-                scale_factor = UNIFORM_HEIGHT / pix.height()
-                displayed_width = pix.width() * scale_factor
+        self.folder_load_counts[folder_path] = len(file_paths)
+        self.folder_loaded_counts[folder_path] = 0
 
-                item = DraggablePixmapItem(pix)
-                item.setAcceptedMouseButtons(Qt.LeftButton)
-                self.scene.addItem(item)
-                item.setPos(QPointF(current_x, self.current_y))
-                item.setScale(scale_factor)
+        # Initialize placement data for this folder
+        self.folder_placement_data[folder_path] = {
+            "current_x": self.current_folder_offset_x,
+            "current_y": 0,
+            "images_in_row": 0,
+            "row_max_height": 0,
+            "folder_max_width": 0,
+            "folder_total_height": 0
+        }
 
-                folder_items.append(item)
-                current_x += displayed_width + SPACING_X
+        self.progress_bar.show()
+        self.progress_bar.setValue(0)
 
-            self.current_y += UNIFORM_HEIGHT + SPACING_Y
-            i += COLUMNS
+        worker = ImageLoadWorker(folder_path, file_paths, UNIFORM_HEIGHT)
+        worker.signals.finished.connect(self.on_image_loaded)
+        worker.signals.error.connect(self.on_image_load_error)
+        worker.signals.progress.connect(self.update_progress)
 
-        if folder_items:
-            self.loaded_images[folder_path] = folder_items
+        self.thread_pool.start(worker)
+
+    def on_image_loaded(self, folder_path, filepath, pix, scale_factor):
+        data = self.folder_placement_data[folder_path]
+        current_x = data["current_x"]
+        current_y = data["current_y"]
+        images_in_row = data["images_in_row"]
+        row_max_height = data["row_max_height"]
+        folder_max_width = data["folder_max_width"]
+        folder_total_height = data["folder_total_height"]
+
+        image_width = pix.width() * scale_factor
+        image_height = pix.height() * scale_factor
+
+        # Check if we need a new row
+        if images_in_row == COLUMNS:
+            # Finish previous row
+            folder_total_height += row_max_height + SPACING_Y
+            # Move down to next row
+            current_y = folder_total_height
+            current_x = self.current_folder_offset_x
+            images_in_row = 0
+            row_max_height = 0
+
+        # Place image
+        item = DraggablePixmapItem(pix)
+        item.setAcceptedMouseButtons(Qt.LeftButton)
+        self.scene.addItem(item)
+        item.setPos(QPointF(current_x, current_y))
+        item.setScale(scale_factor)
+
+        if folder_path not in self.loaded_images:
+            self.loaded_images[folder_path] = []
+        self.loaded_images[folder_path].append(item)
+
+        # Update row and folder metrics
+        current_x += image_width + SPACING_X
+        if image_height > row_max_height:
+            row_max_height = image_height
+
+        # Update max width
+        width_used_this_row = current_x - self.current_folder_offset_x - SPACING_X
+        if width_used_this_row > folder_max_width:
+            folder_max_width = width_used_this_row
+
+        images_in_row += 1
+
+        # Store updated data
+        data["current_x"] = current_x
+        data["current_y"] = current_y
+        data["images_in_row"] = images_in_row
+        data["row_max_height"] = row_max_height
+        data["folder_max_width"] = folder_max_width
+        data["folder_total_height"] = folder_total_height
+
+        self.folder_loaded_counts[folder_path] += 1
+
+        # Check if all images for folder are done
+        if self.folder_loaded_counts[folder_path] == self.folder_load_counts[folder_path]:
+            self.on_folder_load_complete(folder_path)
+
+    def on_folder_load_complete(self, folder_path):
+        data = self.folder_placement_data[folder_path]
+        images_in_row = data["images_in_row"]
+        row_max_height = data["row_max_height"]
+        folder_total_height = data["folder_total_height"]
+        folder_max_width = data["folder_max_width"]
+
+        # Add the last row's height (if any images in last row)
+        if images_in_row > 0:
+            folder_total_height += row_max_height
+
+        # Draw backdrop
+        folder_start_x = self.current_folder_offset_x
+        rect_left = folder_start_x - SPACING_X
+        rect_top = -SPACING_Y
+        rect_width = folder_max_width + 2*SPACING_X
+        rect_height = folder_total_height + 2*SPACING_Y
+
+        rect_item = QGraphicsRectItem(rect_left, rect_top, rect_width, rect_height)
+        rect_item.setBrush(QColor(40, 40, 40, 100))
+        rect_item.setPen(QPen(Qt.NoPen))
+        rect_item.setZValue(-1)
+        self.scene.addItem(rect_item)
+
+        # Add folder name
+        folder_name = os.path.basename(folder_path)
+        text_item = QGraphicsTextItem(folder_name)
+        font = QFont("Arial", 14)
+        text_item.setFont(font)
+        text_item.setDefaultTextColor(Qt.white)
+        text_bbox = text_item.boundingRect()
+        text_x = folder_start_x + (folder_max_width - text_bbox.width())/2
+        text_y = rect_top - text_bbox.height() - 5
+        text_item.setPos(text_x, text_y)
+        text_item.setZValue(0)
+        self.scene.addItem(text_item)
+
+        # Update offset for next folder
+        self.current_folder_offset_x += folder_max_width + 2*SPACING_X
+
+    def on_image_load_error(self, filepath, error):
+        print(f"Error loading {filepath}: {error}")
+
+    def update_progress(self, value):
+        self.progress_bar.setValue(value)
+        if value == 100:
+            QTimer.singleShot(1000, self.progress_bar.hide)
 
     def unload_images_from_folder(self, folder_path):
         items = self.loaded_images.get(folder_path, [])
@@ -489,6 +649,7 @@ class MainWindow(QMainWindow):
         if folder_path in self.loaded_images:
             del self.loaded_images[folder_path]
 
+        # If no images remain, reset
         if not self.any_images_loaded():
             self.reset_canvas()
 
@@ -496,15 +657,11 @@ class MainWindow(QMainWindow):
         return any(self.loaded_images.values())
 
     def reset_canvas(self):
-        self.current_y = 0
+        # Reset all folder offset
+        self.current_folder_offset_x = 0
         self.view.resetTransform()
         self.view.centerOn(0,0)
-        self.view.scale_factor_total = 1.0  # Reset the scale factor total
-
-
-    def remove_all_favorites(self):
-        # no longer used as per request
-        pass
+        self.view.scale_factor_total = 1.0
 
     def on_directories_context_menu(self, pos):
         item = self.directory_tree.itemAt(pos)
@@ -528,7 +685,6 @@ class MainWindow(QMainWindow):
                 self.remove_favorite(folder_path, item)
 
     def remove_favorite(self, folder_path, item):
-        # Uncheck if currently loaded
         if folder_path in self.loaded_images:
             self.unload_images_from_folder(folder_path)
         if folder_path in self.favorites:
@@ -553,9 +709,6 @@ class MainWindow(QMainWindow):
     def is_supported_image(self, filename):
         _, ext = os.path.splitext(filename)
         return ext.lower() in SUPPORTED_IMAGE_FORMATS
-
-    def closeEvent(self, event):
-        event.accept()
 
     def load_favorites_from_json(self):
         if os.path.exists(FAVORITES_FILE):
