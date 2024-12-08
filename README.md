@@ -1,9 +1,12 @@
 Windows app
 
 - Pick a folder to display.
-- Added settings
+- Added settings (you can now adjust columns, spacing and initial size)
 - Clear Canvas
 - Reset Canvas
+- Backdrop with folder name
+- Multithreading
+- Progress bar
 
 to do
 - save and load canvases
