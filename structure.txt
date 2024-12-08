@@ -1,0 +1,20 @@
+pure_ref_prototype/
+├── main.py
+├── ui/
+│   ├── __init__.py
+│   ├── main_window.py
+│   ├── graphics_view.py
+│   ├── draggable_pixmap_item.py
+├── workers/
+│   ├── __init__.py
+│   ├── image_loader.py
+├── managers/
+│   ├── __init__.py
+│   ├── favorites_manager.py
+│   ├── directory_manager.py
+├── utils/
+│   ├── __init__.py
+│   ├── constants.py
+│   ├── helpers.py
+├── resources/
+└── requirements.txt
