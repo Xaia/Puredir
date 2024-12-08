@@ -1,4 +1,4 @@
-Tested on win 11, py3.13, 
+Tested on win 11, py3.13, PyQt5>=5.15
 
 The app draws all the image from the folder in a nice organized way. 
 Left click to move images, Middle click to pan, right-click hold to move the app window.
