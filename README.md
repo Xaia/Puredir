@@ -1,12 +1,20 @@
-Windows app
+Tested on win 11, py3.13, PyQt5>=5.15
 
-Pick a folder to display.
+The app draws all the image from the folder in a nice organized way. 
+Left click to move images, Middle click to pan, right-click hold to move the app window.
+
+- Pick a folder to display.
+- Added settings (you can now adjust columns, spacing and initial size)
+- Add path to favourites
+- Clear Canvas
+- Reset Canvas
+- Backdrop with folder name
+- Multithreading
+- Progress bar
+- Supported file types .png', '.xpm', '.jpg', '.jpeg', '.bmp', '.gif'
 
 to do
 - save and load canvases
 - add notes
-- loading bar
-- image limiter per canvas + load next canvas
-- multithreaded, sequencial image loading
 
-![wqDx8BfKYS_20241208_03 27](https://github.com/user-attachments/assets/ae88c098-1aae-471b-8fce-0efcfa6c5d95)
+![7RlPp64ZQD_20241209_00 07](https://github.com/user-attachments/assets/31886125-fefe-409a-92b2-929684499e66)
