@@ -2,6 +2,7 @@
 
 SUPPORTED_IMAGE_FORMATS = ['.png', '.xpm', '.jpg', '.jpeg', '.bmp', '.gif']
 FAVORITES_FILE = "favorites.json"
+CONFIG_FILE = "config.json"
 
 UNIFORM_HEIGHT = 150
 COLUMNS = 5

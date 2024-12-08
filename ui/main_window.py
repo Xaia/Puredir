@@ -23,17 +23,11 @@ from ui.graphics_view import GraphicsView  # Ensure this import points to your f
 from ui.draggable_pixmap_item import DraggablePixmapItem
 from ui.folder_backdrop_item import FolderBackdropItem  # Import the custom item
 from utils.image_cache import LRUCache  # Import the LRUCache
-# Constants
-SUPPORTED_IMAGE_FORMATS = ['.png', '.xpm', '.jpg', '.jpeg', '.bmp', '.gif']
-FAVORITES_FILE = "favorites.json"
-CONFIG_FILE = "config.json"
+from utils.constants import (
+    UNIFORM_HEIGHT, COLUMNS, SPACING_X, SPACING_Y,
+    INFINITE_CANVAS_SIZE, SUPPORTED_IMAGE_FORMATS, FAVORITES_FILE, CONFIG_FILE
+)
 
-# Layout Parameters
-UNIFORM_HEIGHT = 150
-COLUMNS = 5
-SPACING_X = 10
-SPACING_Y = 10
-INFINITE_CANVAS_SIZE = 10_000_000
 
 
 class ImageLoadSignals(QObject):
@@ -393,7 +387,7 @@ class MainWindow(QMainWindow):
         """
         if folder_path in self.loaded_images:
             # Already loaded
-            return
+            return False
 
         file_paths = []
         for root, dirs, files in os.walk(folder_path):
