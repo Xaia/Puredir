@@ -20,6 +20,8 @@ from PyQt5.QtGui import (
 
 from ui.graphics_view import GraphicsView  # Ensure this import points to your fixed graphics_view.py
 from ui.draggable_pixmap_item import DraggablePixmapItem
+from ui.folder_backdrop_item import FolderBackdropItem  # Import the custom item
+from utils.image_cache import LRUCache  # Import the LRUCache
 
 # Constants
 SUPPORTED_IMAGE_FORMATS = ['.png', '.xpm', '.jpg', '.jpeg', '.bmp', '.gif']
@@ -39,25 +41,32 @@ class ImageLoadSignals(QObject):
     progress = pyqtSignal(int)
 
 class ImageLoadWorker(QRunnable):
-    def __init__(self, folder_path, filepaths, uniform_height):
+    def __init__(self, folder_path, filepaths, uniform_height, image_cache):
         super().__init__()
         self.folder_path = folder_path
         self.filepaths = filepaths
         self.uniform_height = uniform_height
         self.signals = ImageLoadSignals()
+        self.image_cache = image_cache
 
     def run(self):
         for i, filepath in enumerate(self.filepaths):
             try:
-                pix = QPixmap(filepath)
-                if pix.isNull():
-                    raise ValueError(f"Could not load image: {filepath}")
+                # Check if pixmap is in cache
+                pix = self.image_cache.get(filepath)
+                if pix is None:
+                    # Load from disk
+                    pix = QPixmap(filepath)
+                    if pix.isNull():
+                        raise ValueError(f"Could not load image: {filepath}")
+                    # Store in cache
+                    self.image_cache.put(filepath, pix)
                 
                 scale_factor = self.uniform_height / pix.height()
 
                 # Emit finished for each image
                 self.signals.finished.emit(self.folder_path, filepath, pix, scale_factor)
-                
+
                 # Emit progress
                 progress = int((i + 1) / len(self.filepaths) * 100)
                 self.signals.progress.emit(progress)
@@ -79,6 +88,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.hide()
 
+        self.image_cache = LRUCache(capacity=200)  # Adjust capacity as needed
+
         self.scene = QGraphicsScene()
         self.scene.setSceneRect(-INFINITE_CANVAS_SIZE//2, -INFINITE_CANVAS_SIZE//2, INFINITE_CANVAS_SIZE, INFINITE_CANVAS_SIZE)
 
@@ -96,10 +107,12 @@ class MainWindow(QMainWindow):
         self.loaded_images = {}
         self.current_folder_offset_x = 0  # where the next folder should start horizontally
 
+        self.loaded_folders_order = []  # To maintain the order of loaded folders
+
         self.folder_load_counts = {}
         self.folder_loaded_counts = {}
         # Per-folder placement data
-        # {folder_path: {"current_x", "current_y", "images_in_row", "row_max_height", "folder_max_width", "folder_total_height"}}
+        # {folder_path: {"current_x", "current_y", "images_in_row", "row_max_height", "folder_max_width", "folder_total_height", "image_relative_positions"}}
         self.folder_placement_data = {}
 
         self.directory_tree = QTreeWidget()
@@ -266,6 +279,12 @@ class MainWindow(QMainWindow):
         self.favorites_tree.blockSignals(False)
 
     def load_images_from_folder(self, folder_path):
+        """
+        Loads images from the specified folder, utilizing the image cache.
+
+        Args:
+            folder_path (str): The path of the folder to load images from.
+        """
         if folder_path in self.loaded_images:
             # Already loaded
             return
@@ -290,13 +309,17 @@ class MainWindow(QMainWindow):
             "images_in_row": 0,
             "row_max_height": 0,
             "folder_max_width": 0,
-            "folder_total_height": 0
+            "folder_total_height": 0,
+            "image_relative_positions": []  # To store relative positions of images
         }
+
+        # Append folder to the ordered list
+        self.loaded_folders_order.append(folder_path)
 
         self.progress_bar.show()
         self.progress_bar.setValue(0)
 
-        worker = ImageLoadWorker(folder_path, file_paths, UNIFORM_HEIGHT)
+        worker = ImageLoadWorker(folder_path, file_paths, UNIFORM_HEIGHT, self.image_cache)
         worker.signals.finished.connect(self.on_image_loaded)
         worker.signals.error.connect(self.on_image_load_error)
         worker.signals.progress.connect(self.update_progress)
@@ -340,6 +363,11 @@ class MainWindow(QMainWindow):
             }
         self.loaded_images[folder_path]["images"].append(item)
 
+        # Calculate and store relative position
+        relative_x = current_x - (self.current_folder_offset_x - SPACING_X)
+        relative_y = current_y + SPACING_Y  # Assuming backdrop is above by SPACING_Y
+        data["image_relative_positions"].append((relative_x, relative_y))
+
         # Update row and folder metrics
         current_x += image_width + SPACING_X
         if image_height > row_max_height:
@@ -367,6 +395,13 @@ class MainWindow(QMainWindow):
             self.on_folder_load_complete(folder_path)
 
     def on_folder_load_complete(self, folder_path):
+        """
+        Called when all images for a folder have been loaded.
+        Creates and adds the backdrop with the folder name.
+
+        Args:
+            folder_path (str): The path of the loaded folder.
+        """
         data = self.folder_placement_data[folder_path]
         images_in_row = data["images_in_row"]
         row_max_height = data["row_max_height"]
@@ -377,38 +412,25 @@ class MainWindow(QMainWindow):
         if images_in_row > 0:
             folder_total_height += row_max_height
 
-        # Draw backdrop
+        # Define the backdrop rectangle
         folder_start_x = self.current_folder_offset_x
         rect_left = folder_start_x - SPACING_X
         rect_top = -SPACING_Y
-        rect_width = folder_max_width + 2*SPACING_X
-        rect_height = folder_total_height + 2*SPACING_Y
+        rect_width = folder_max_width + 2 * SPACING_X
+        rect_height = folder_total_height + 2 * SPACING_Y
 
-        rect_item = QGraphicsRectItem(rect_left, rect_top, rect_width, rect_height)
-        rect_item.setBrush(QColor(40, 40, 40, 100))
-        rect_item.setPen(QPen(Qt.NoPen))
-        rect_item.setZValue(-1)
-        self.scene.addItem(rect_item)
+        backdrop_rect = QRectF(rect_left, rect_top, rect_width, rect_height)
 
-        # Add folder name
+        # Create and add the custom FolderBackdropItem
         folder_name = os.path.basename(folder_path)
-        text_item = QGraphicsTextItem(folder_name)
-        font = QFont("Arial", 14)
-        text_item.setFont(font)
-        text_item.setDefaultTextColor(Qt.white)
-        text_bbox = text_item.boundingRect()
-        text_x = folder_start_x + (folder_max_width - text_bbox.width())/2
-        text_y = rect_top - text_bbox.height() - 5
-        text_item.setPos(text_x, text_y)
-        text_item.setZValue(0)
-        self.scene.addItem(text_item)
+        backdrop_item = FolderBackdropItem(folder_name, backdrop_rect)
+        self.scene.addItem(backdrop_item)
 
-        # Store rect_item and text_item
-        self.loaded_images[folder_path]["rect_item"] = rect_item
-        self.loaded_images[folder_path]["text_item"] = text_item
+        # Store the backdrop item
+        self.loaded_images[folder_path]["backdrop"] = backdrop_item
 
         # Update offset for next folder
-        self.current_folder_offset_x += folder_max_width + 2*SPACING_X
+        self.current_folder_offset_x += folder_max_width + 2 * SPACING_X
 
     def on_image_load_error(self, filepath, error):
         print(f"Error loading {filepath}: {error}")
@@ -419,29 +441,92 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(1000, self.progress_bar.hide)
 
     def unload_images_from_folder(self, folder_path):
+        """
+        Unloads images and associated backdrop items from the scene for a given folder.
+        Repositions remaining folders to fill the freed space.
+
+        Args:
+            folder_path (str): The path of the folder to unload.
+        """
         if folder_path not in self.loaded_images:
             return  # Nothing to unload
 
         # Remove image items
         for item in self.loaded_images[folder_path]["images"]:
             self.scene.removeItem(item)
-        
-        # Remove backdrop rectangle
-        rect_item = self.loaded_images[folder_path]["rect_item"]
-        if rect_item:
-            self.scene.removeItem(rect_item)
-        
-        # Remove folder name text
-        text_item = self.loaded_images[folder_path]["text_item"]
-        if text_item:
-            self.scene.removeItem(text_item)
-        
+
+        # Remove backdrop
+        backdrop_item = self.loaded_images[folder_path].get("backdrop")
+        if backdrop_item:
+            self.scene.removeItem(backdrop_item)
+
         # Remove from loaded_images
         del self.loaded_images[folder_path]
+
+        # Remove from the ordered list
+        if folder_path in self.loaded_folders_order:
+            self.loaded_folders_order.remove(folder_path)
+
+        # Remove placement data
+        if folder_path in self.folder_placement_data:
+            del self.folder_placement_data[folder_path]
+
+        # Rearrange remaining folders to fill the space
+        self.rearrange_folders()
 
         # If no images remain, reset
         if not self.any_images_loaded():
             self.reset_canvas()
+
+    def rearrange_folders(self):
+        """
+        Rearranges the positions of all loaded folders and their images based on the current order.
+        """
+        self.current_folder_offset_x = 0  # Reset offset
+
+        for folder_path in self.loaded_folders_order:
+            data = self.folder_placement_data[folder_path]
+            folder_max_width = data["folder_max_width"]
+            folder_total_height = data["folder_total_height"]
+
+            # Define the new backdrop rectangle
+            rect_left = self.current_folder_offset_x - SPACING_X
+            rect_top = -SPACING_Y
+            rect_width = folder_max_width + 2 * SPACING_X
+            rect_height = folder_total_height + 2 * SPACING_Y
+
+            backdrop_rect = QRectF(rect_left, rect_top, rect_width, rect_height)
+
+            # Update backdrop item
+            backdrop_item = self.loaded_images[folder_path]["backdrop"]
+            backdrop_item.backdrop_rect = backdrop_rect
+            backdrop_item.text_rect = QRectF(
+                backdrop_rect.left(),
+                backdrop_rect.top() - backdrop_item.text_bbox.height() - backdrop_item.text_margin,
+                backdrop_rect.width(),
+                backdrop_item.text_bbox.height()
+            )
+            backdrop_item.total_rect = QRectF(
+                backdrop_rect.left(),
+                backdrop_item.text_rect.top(),
+                backdrop_rect.width(),
+                backdrop_rect.height() + backdrop_item.text_bbox.height() + backdrop_item.text_margin
+            )
+            backdrop_item.prepareGeometryChange()
+            backdrop_item.setPos(backdrop_rect.left(), backdrop_rect.top())
+
+            # Reposition images based on relative positions
+            for idx, image_item in enumerate(self.loaded_images[folder_path]["images"]):
+                if idx >= len(data["image_relative_positions"]):
+                    # Prevent index error if positions are mismatched
+                    continue
+                relative_x, relative_y = data["image_relative_positions"][idx]
+                new_x = backdrop_rect.left() + relative_x
+                new_y = backdrop_rect.top() + relative_y
+                image_item.setPos(QPointF(new_x, new_y))
+
+            # Update offset for the next folder
+            self.current_folder_offset_x += folder_max_width + 2 * SPACING_X
 
     def any_images_loaded(self):
         return bool(self.loaded_images)

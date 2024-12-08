@@ -2,7 +2,7 @@
 
 from PyQt5.QtWidgets import QGraphicsView, QMenu, QMessageBox, QApplication
 from PyQt5.QtCore import Qt, QRect, QPoint, QRectF, QTimer
-from PyQt5.QtGui import QWheelEvent, QMouseEvent, QCursor
+from PyQt5.QtGui import QWheelEvent, QMouseEvent, QCursor,  QPainter
 from utils.constants import (
     EDGE_RESIZE_MARGIN, RIGHT_CLICK_DRAG_THRESHOLD, INFINITE_CANVAS_SIZE
 )
@@ -25,6 +25,12 @@ class GraphicsView(QGraphicsView):
         super().__init__(scene)
         self.mainwindow = mainwindow
         self.zoom_factor = 1.15
+
+        # In GraphicsView __init__
+        self.setCacheMode(QGraphicsView.CacheBackground)
+        self.setViewportUpdateMode(QGraphicsView.BoundingRectViewportUpdate)
+        self.setRenderHint(QPainter.Antialiasing, False)
+        self.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
         # Disable scroll bars
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
