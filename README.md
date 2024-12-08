@@ -5,6 +5,7 @@ Left click to move images, Middle click to pan, right-click hold to move the app
 
 - Pick a folder to display.
 - Added settings (you can now adjust columns, spacing and initial size)
+- Add path to favourites
 - Clear Canvas
 - Reset Canvas
 - Backdrop with folder name
