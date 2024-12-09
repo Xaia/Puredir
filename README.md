@@ -14,6 +14,7 @@ Left click to move images, Middle click to pan, right-click hold to move the app
 - Multithreading
 - Progress bar
 - Supported file types .png', '.xpm', '.jpg', '.jpeg', '.bmp', '.gif'
+- collapsable directory menu
 
 to do
 - save and load canvases
