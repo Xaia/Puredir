@@ -19,5 +19,6 @@ Left click to move images, Middle click to pan, right-click hold to move the app
 to do
 - save and load canvases
 - add notes
+- lazy loading
 
 ![7RlPp64ZQD_20241209_00 07](https://github.com/user-attachments/assets/31886125-fefe-409a-92b2-929684499e66)
